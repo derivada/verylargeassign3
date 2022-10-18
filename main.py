@@ -14,49 +14,14 @@ class Connection:
 
     def __init__(self):
         self.connection = DbConnector()
-        self.db_connection = self.connection.db_connection
-        self.cursor = self.connection.cursor
-
-    def create_tables(self):
-        # We create Users, Activity and TrackPoint tables following the database schema provided 
-        query_users = """CREATE TABLE IF NOT EXISTS User (
-            id VARCHAR(30) NOT NULL PRIMARY KEY,
-            has_labels BOOLEAN NOT NULL)
-        """
-        query_activity = """CREATE TABLE IF NOT EXISTS Activity (
-            id INT NOT NULL PRIMARY KEY AUTO_INCREMENT,
-            user_id VARCHAR(30) NOT NULL,
-            transportation_mode VARCHAR(30),
-            start_date_time DATETIME NOT NULL,
-            end_date_time DATETIME NOT NULL,
-            FOREIGN KEY (user_id)
-                REFERENCES User(id))
-        """
-        query_trackpoint = """CREATE TABLE IF NOT EXISTS TrackPoint (
-            id INT NOT NULL PRIMARY KEY AUTO_INCREMENT,
-            activity_id INT NOT NULL,
-            lat DOUBLE NOT NULL,
-            lon DOUBLE NOT NULL,
-            altitude INT,
-            date_time DATETIME NOT NULL,
-            FOREIGN KEY (activity_id)
-                REFERENCES Activity(id))
-        """
-        self.cursor.execute(query_users)
-        self.cursor.execute(query_activity)
-        self.cursor.execute(query_trackpoint)
-        self.db_connection.commit()
-        print('Tables User, Activity and TrackPoint created!')
+        self.client = self.connection.client
+        self.db = self.connection.db
     
     def delete_tables(self):
         # We delete all the tables in the correct order
-        query_delete_trackpoint = """DROP TABLE IF EXISTS TrackPoint"""
-        query_delete_activity = """DROP TABLE IF EXISTS Activity"""
-        query_delete_user = """DROP TABLE IF EXISTS User"""
-        self.cursor.execute(query_delete_trackpoint)
-        self.cursor.execute(query_delete_activity)
-        self.cursor.execute(query_delete_user)
-        self.db_connection.commit()
+        self.db.user.drop()
+        self.db.activity.drop()
+        self.db.trackpoint.drop()
     
     def insert_data(self, dataset_path):
         # Find labeled users
@@ -70,22 +35,30 @@ class Connection:
         users = [f.path.split('\\')[2] for f in os.scandir(dataset_path + '\\data') if f.is_dir()]
 
         activity_counter = 1
+        trackpoint_counter = 1
         total_time = 0
+        trackpoint_batch_size = 100000
+        trackpoints = []
+
         # Main user and activity loop
-        for user in users:
+        for user_id in users:
             # Insert user into DB
             start = time.perf_counter()
-            print('Current user = ', user, end = '')
-            query_insert_user = """INSERT INTO User (id, has_labels) VALUES ({}, {})"""
-            if labeled_users.count(user) > 0:
-                self.cursor.execute(query_insert_user.format(user, 'TRUE'))
+            print('Current user = ', user_id)
+            user = {}
+            user['_id'] = user_id
+            if labeled_users.count(user_id) > 0:
+                 user['has_labels'] = True
             else:
-                self.cursor.execute(query_insert_user.format(user, 'FALSE'))
+                 user['has_labels'] = False
+            
+            # Insert the user
+            self.db.user.insert_one(user)
 
             # Read labels file if we got a labeled user
             labels = []
-            if labeled_users.count(user) > 0:
-                with open(dataset_path + '\\data\\{}\\labels.txt'.format(user), newline='') as csvfile:
+            if labeled_users.count(user_id) > 0:
+                with open(dataset_path + '\\data\\{}\\labels.txt'.format(user_id), newline='') as csvfile:
                     reader = csv.reader(csvfile, delimiter='\t', quotechar='|')
                     line_count = 0
                     for row in reader:
@@ -94,8 +67,9 @@ class Connection:
                         labels.append(row)
             
             # Loop trough his activities
-            for file in os.scandir(dataset_path + '\\data\\{}\\Trajectory'.format(user)):
-                trackpoints = []
+            for file in os.scandir(dataset_path + '\\data\\{}\\Trajectory'.format(user_id)):
+                activity = {}
+                trackpoints_data = []
                 # Open activity file and parse as csv
                 with open(file.path, newline='') as csvfile:
                     reader = csv.reader(csvfile, delimiter=',', quotechar='|')
@@ -105,37 +79,49 @@ class Connection:
                         line_count += 1
                         if(line_count <= 6): continue # Skip header
                         elif(line_count > 2506): break # File too large
-                        trackpoints.append(row)
+                        trackpoints_data.append(row)
                     
                     if(line_count > 2506): continue # File too large -> Next activity
                     
                     # Insert activity and trackpoints into DB
-                    # Format DATETIME: YYYY-MM-DD hh:mm:ss
+                    # Timestamp format: YYYY-MM-DD hh:mm:ss
                     # Get activity attributes (including transportation mode)
-                    query_insert_activity = """INSERT INTO Activity (id, user_id, transportation_mode, start_date_time, end_date_time) VALUES ({}, {}, {}, {}, {})"""
-                    start_date_time = (trackpoints[0][5] + ' ' + trackpoints[0][6]).replace('/', '-')
-                    end_date_time = (trackpoints[len(trackpoints)-1][5] + ' ' + trackpoints[len(trackpoints)-1][6]).replace('/', '-')
-                    transportation_mode = 'NULL'
-                    # Find transportation mode label by matching starting and ending time
+                    activity['_id'] = activity_counter
+                    activity['user_id'] = user['_id']
+                    activity['start_date_time'] = (trackpoints_data[0][5] + ' ' + trackpoints_data[0][6]).replace('/', '-')
+                    activity['end_date_time'] = (trackpoints_data[len(trackpoints_data)-1][5] + ' ' + trackpoints_data[len(trackpoints_data)-1][6]).replace('/', '-')
+                    activity['transportation_mode'] = None
+                    # Find correct transportation mode label by matching starting and ending time
                     for label in labels:
-                        if start_date_time == label[0].replace('/', '-') and end_date_time == label[1].replace('/', '-'):
-                            transportation_mode = '\'' + label[2] + '\'' 
+                        if activity['start_date_time'] == label[0].replace('/', '-') and activity['end_date_time'] == label[1].replace('/', '-'):
+                             activity['transportation_mode'] = label[2]
                     # Insert activity
-                    self.cursor.execute(query_insert_activity.format(0, user, transportation_mode, '\'' + start_date_time + '\'' , '\'' + end_date_time + '\''))
-                    query_insert_trackpoint = """INSERT INTO TrackPoint (id, activity_id, lat, lon, altitude, date_time) VALUES """
-                    trackpoint_values = """({}, {}, {}, {}, {}, {}), """
-                    # Insert trackpoints as a batched insert
-                    for trackpoint in trackpoints:
-                        date_time = ('\'' + trackpoint[5] + ' ' + trackpoint[6] + '\'').replace('/', '-')
-                        query_insert_trackpoint = query_insert_trackpoint + trackpoint_values.format(0, activity_counter, trackpoint[0], trackpoint[1], trackpoint[3], date_time)
-                    query_insert_trackpoint = query_insert_trackpoint[:-2] + ';'
-                    self.cursor.execute(query_insert_trackpoint)
+                    self.db.activity.insert_one(activity)
+
+
+                    for trackpoint_data in trackpoints_data:
+                        trackpoint = {}
+                        trackpoint['_id'] = trackpoint_counter
+                        trackpoint['activity_id'] = activity['_id']
+                        trackpoint['lat'] = trackpoint_data[0]
+                        trackpoint['lon'] = trackpoint_data[1]
+                        trackpoint['altitude'] = trackpoint_data[3]
+                        trackpoint['date_time'] = (trackpoint_data[5] + ' ' + trackpoint_data[6]).replace('/', '-')
+                        trackpoints.append(trackpoint)
+                        trackpoint_counter += 1
+                        # Batch insert into DB
+                        if(trackpoint_counter % trackpoint_batch_size == 0):
+                            self.db.trackpoint.insert_many(trackpoints) 
+                            trackpoints = []
+                            print('Inserted trackpoints {} to {}'.format(trackpoint_counter - trackpoint_batch_size, trackpoint_counter))
+
                     activity_counter += 1
-            self.db_connection.commit()
             stop = time.perf_counter()
-            print(" || User inserted in {:.2f} seconds".format(stop - start))
             total_time += stop - start
-        print('Data inserted in {:0.0f} minutes and seconds {:0.0f}'.format(total_time / 60, total_time % 60))
+        
+        # Insert remaining trackpoints
+        self.db.trackpoint.insert_many(trackpoints)
+        print('Data inserted in {:0.0f} minutes and  {:0.0f} seconds'.format(total_time / 60, total_time % 60))
     
     def execute_and_print(self, query, message):
         # Helper function that executes and prints the results of a query
@@ -370,21 +356,20 @@ class Connection:
 def main():
     try:
         program = Connection()                       # Initialize database connection
-        #program.delete_tables()                     # Delete all tables and data
-        #program.create_tables()                     # Create database tables if they don't exist
-        #program.insert_data('dataset')              # Parse dataset and insert data into tables
+        program.delete_tables()                     # Delete all tables and data
+        program.insert_data('dataset')              # Parse dataset and insert data into tables
         # Execute the queries
-        program.query_1()
-        program.query_2()
-        program.query_3()
-        program.query_4()
-        program.query_5()
-        program.query_6()
-        program.query_7()
-        program.query_8()
-        program.query_9()
-        program.query_10()
-        program.query_11()
+        # program.query_1()
+        # program.query_2()
+        # program.query_3()
+        # program.query_4()
+        # program.query_5()
+        # program.query_6()
+        # program.query_7()
+        # program.query_8()
+        # program.query_9()
+        # program.query_10()
+        # program.query_11()
 
 
     except Exception as e:
