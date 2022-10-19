@@ -180,9 +180,15 @@ class Connection:
         # query = "SELECT AVG(count) as Average FROM (SELECT user_id, COUNT(id) as count FROM Activity GROUP BY user_id) AS count_act;"
         user_avgs = self.db.activity.aggregate([
             {
-                "$group": {"_id": '$user_id', "count": {"$count": {}}}
-                
-            }     
+                "$group":{
+                    "_id":"$user_id",
+                    "count":{
+                        "$count":{
+                            
+                        }
+                    }
+                }
+            }
         ])
         total = 0
         count = 0
@@ -190,7 +196,7 @@ class Connection:
             total += user['count']
             count += 1
         
-        print("Query 2 - Find the average number of activities per user:\n")
+        print("\nQuery 2 - Find the average number of activities per user:\n")
         print(tabulate([[total / count]], headers=["Average"], tablefmt="simple"))
 
     def query_3(self):
@@ -202,18 +208,22 @@ class Connection:
     def query_4(self):
         # 4: Find all users who have taken a taxi.
         taxi_users = self.db.activity.aggregate([
-            { 
-                '$match': { 'transportation_mode': 'taxi' } 
-            }, 
-            { 
-                '$group': { '_id': '$user_id' } 
-            }, 
             {
-                '$count': 'Taxi Users'
+                "$match":{
+                    "transportation_mode":"taxi"
+                }
+            },
+            {
+                "$group":{
+                    "_id":"$user_id"
+                }
+            },
+            {
+                "$count":"Taxi Users"
             }
         ])
-        print("Query 4 - Find all users who have taken a taxi:\n")
-        print(tabulate(taxi_users,  headers=["Taxi Users"], tablefmt="simple"))
+        print("\nQuery 4 - Find all users who have taken a taxi:\n")
+        print(tabulate([[taxi_users.next()['Taxi Users']]], headers=["Taxi Users"], tablefmt="simple"))
 
     def query_5(self):
         # 5: Find all types of transportation modes and count how many activities that are tagged with these transportation mode labels. Do not count the rows where the mode is null.
@@ -229,18 +239,60 @@ class Connection:
         # For this task, we will make the simplification that a task initiated in a year also ends in that year. This is most notable on task b),
         # where the task hours only count towards the year in which it starts. Without this, the queries would become way harder to write and understand.
 
-        # a) For the first query, we group all activies by their start year, and then aggregate by their count. To get the maximum one,
-        # we use the trick of ordering by the count and then limiting the query to 1 row. Of course, this trick is only acceptable since
-        # we have a small number of output rows, and it would be inefficient for big intermediate tables (sorting is O(nlogn), max is O(n))
-        query = "SELECT Year(start_date_time) as Year, COUNT(id) as 'Activity Count' FROM Activity GROUP BY Year ORDER BY 'Activity Count' DESC LIMIT 1;"
-        self.execute_and_print(
-            query, "Query 6 - a) Find the year with the most activities:")
+        most_activity_year = self.db.activity.aggregate([
+            {
+                "$group":{
+                    "_id":{
+                        "$year":"$start_date_time"
+                    },
+                    "total":{
+                        "$sum":1
+                    }
+                }
+            },
+            {
+                "$sort":{
+                    "total":-1
+                }
+            },
+            {
+                "$limit":1
+            }
+        ])
+        result = most_activity_year.next()
+        print("\nQuery 6 - a) Find the year with the most activities:\n")
+        print(tabulate([[result['_id'], result['total']]], headers = ["Year", "Activities"], tablefmt="simple"))
         # b) For this part, we modify the above query by now counting the sum of the difference of hours between
-        query = "SELECT Year(start_date_time) as Year, SUM(TIMESTAMPDIFF(HOUR, start_date_time, end_date_time)) as 'Total Hours' from Activity GROUP BY Year ORDER BY 'Total Hours' DESC LIMIT 1;"
-        self.execute_and_print(
-            query, "Query 6 - b) Is this also the year with most recorded hours?:")
-        print(
-            'As we see, 2008 with the most activities, but 2009 has more hours recorded\n')
+        most_hours_year = self.db.activity.aggregate([
+            {
+                "$group":{
+                    "_id":{
+                        "$year":"$start_date_time"
+                    },
+                    "total":{
+                        "$sum":{
+                            "$dateDiff":{
+                                "startDate":"$start_date_time",
+                                "endDate":"$end_date_time",
+                                "unit":"hour"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "$sort":{
+                    "total":-1
+                }
+            },
+            {
+                "$limit":1
+            }
+        ])
+        result = most_hours_year.next()
+        print("\nQuery 6 - b) Is this also the year with most recorded hours?:\n")
+        print(tabulate([[result['_id'], result['total']]], headers = ["Year", "Hours"], tablefmt="simple"))
+        print('\nAs we see, 2008 with the most activities, but 2009 has more hours recorded\n')
 
     def query_7(self):
         # 7: Find the total distance (in km) walked in 2008, by user with id=112.
@@ -416,11 +468,11 @@ def main():
         #program.insert_data('dataset')
         # Execute the queries
         # program.query_1()
-        # program.query_2()
+        program.query_2()
         # program.query_3()
-        # program.query_4()
+        program.query_4()
         # program.query_5()
-        # program.query_6()
+        program.query_6()
         # program.query_7()
         # program.query_8()
         # program.query_9()
