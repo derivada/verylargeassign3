@@ -167,27 +167,32 @@ class Connection:
 
     def query_1(self):
         # 1: How many users, activities and trackpoints are there in the dataset (after it is inserted into the database).
-        query1 = "SELECT COUNT(id) FROM User;"
-        query2 = "SELECT COUNT(id) FROM Activity;"
-        query3 = "SELECT COUNT(id) FROM TrackPoint;"
         start = time.perf_counter()
-        self.cursor.execute(query1)
-        result1 = self.cursor.fetchall()
-        self.cursor.execute(query2)
-        result2 = self.cursor.fetchall()
-        self.cursor.execute(query3)
-        result3 = self.cursor.fetchall()
+        users = self.db.user.aggregate([
+            {
+                "$count": "Users"
+            }
+        ])
+
+        activities = self.db.activity.aggregate([
+            {
+                "$count": "Activities"
+            }
+        ])
+
+        trackpoints = self.db.trackpoint.aggregate([
+            {
+                "$count": "Trackpoints"
+            }
+        ])
+
         stop = time.perf_counter()
+        table1 = [[users.next()['Users'], activities.next()['Activities'], trackpoints.next()['Trackpoints']]]
+
         # Arrange into tabulate table
-        rows = [[result1[0][0], result2[0][0], result3[0][0]]]
         print("Query 1 - How many users, trackpoints and activities are there in the dataset (after it is inserted into the database):\n")
-        print(tabulate(rows, headers=[
-              "Total Users", "Total Activities", "Total Trackpoints"], tablefmt="simple"))
-        if len(rows) == 1:
-            print('\n1 row in set ({:.2f} sec)\n'.format(stop - start))
-        else:
-            print('\n{} rows in set ({:.2f} sec)\n'.format(
-                len(rows), stop - start))
+        print(tabulate(table1, headers=["Total Users", "Total Activities", "Total Trackpoints"], tablefmt="simple"))
+        print('\nQuery done in {:.2f} seconds\n'.format(stop - start))
 
     def query_2(self):
         # 2: Find the average number of activities per user.
@@ -200,7 +205,7 @@ class Connection:
                     "_id":"$user_id",
                     "count":{
                         "$count":{
-                            
+
                         }
                     }
                 }
@@ -222,9 +227,34 @@ class Connection:
 
     def query_3(self):
         # 3: Find the top 20 users with the highest number of activities.
-        query = "SELECT user_id, COUNT(id) as 'Activities per User' FROM Activity GROUP BY user_id ORDER BY COUNT(id) DESC LIMIT 20;"
-        self.execute_and_print(
-            query, "Query 3 - Find the top 20 users with the highest number of activities:")
+        start = time.perf_counter()
+        user_act = self.db.activity.aggregate([
+            {
+                "$group":{
+                    "_id":"$user_id",
+                    "count":{
+                        "$sum":1
+                    }
+                }
+            },
+            {
+                "$sort": {
+                    "count": -1
+                }
+            },
+            {
+                "$limit": 20
+            }
+        ])
+        stop = time.perf_counter()
+
+        table = []
+        for user in user_act:
+            table.append([user['_id'], user['count']])
+
+        print("\nQuery 3 - Find the top 20 users with the highest number of activities:\n")
+        print(tabulate(table, headers=["Users","Activities"], tablefmt="simple"))
+        print('\nQuery done in {:.2f} seconds\n'.format(stop - start))
 
     def query_4(self):
         # 4: Find all users who have taken a taxi.
@@ -256,9 +286,30 @@ class Connection:
 
     def query_5(self):
         # 5: Find all types of transportation modes and count how many activities that are tagged with these transportation mode labels. Do not count the documents where the mode is null.
-        query = "SELECT transportation_mode, COUNT(id) as count FROM (SELECT * FROM Activity WHERE transportation_mode IS NOT NULL) as t1 GROUP BY transportation_mode"
-        self.execute_and_print(
-            query, "Query 5 - Find all types of transportation modes and count how many activities that are tagged with these transportation mode labels. Do not count the rows where the mode is null:")
+        start = time.perf_counter()
+        transportation_mode_types = self.db.activity.aggregate([
+            {
+                "$match": {
+                    "transportation_mode": {"$ne": None}}
+
+            },
+            {
+                "$group": {
+                    "_id": "$transportation_mode",
+                    "count": {
+                        "$sum": 1
+                    }
+                }
+            }
+        ])
+        stop = time.perf_counter()
+
+        table = []
+        for transportation_mode in transportation_mode_types:
+            table.append([transportation_mode['_id'], transportation_mode['count']])
+        print("\nQuery 5 - Find all types of transportation modes and count how many activities that are tagged with these transportation mode labels. Do not count the documents where the mode is null:\n")
+        print(tabulate(table, headers=["Transportation Mode Types"], tablefmt="simple"))
+        print('\nQuery done in {:.2f} seconds\n'.format(stop - start))
 
     def query_6(self):
         # 6:
@@ -339,25 +390,34 @@ class Connection:
 
     def query_7(self):
         # 7: Find the total distance (in km) walked in 2008, by user with id=112.
-        query = "SELECT lat, lon FROM TrackPoint as tp JOIN Activity as act WHERE tp.activity_id = act.id AND act.user_id = 112 AND YEAR(start_date_time) = 2008"
         start = time.perf_counter()
-        self.cursor.execute(query)
+        coordinates = self.db.trackpoint.find(
+            {
+                "date_time":
+                    {
+                        "$gte" : parse_time("2008-01-01 00:00:00"),
+                        "$lte" : parse_time("2008-12-31 23:59:59")
+                    },
+                "user_id": "112"
+            },
+            {
+                "_id": 0,
+                "lat": 1,
+                "lon": 1
+            }
+        )
         dist = 0
         last = None
         # Sum all the distances using haversine
-        for (lat, lon) in self.cursor:
+        for coordinate in coordinates:
             if last is not None:
-                dist += haversine((lat, lon), last, unit='km')
-            last = (lat, lon)
+                dist += haversine((coordinate['lat'], coordinate['lon']), last, unit='km')
+            last = (coordinate['lat'], coordinate['lon'])
         stop = time.perf_counter()
         rows = [[dist]]
-        print("Query 7 - Find the total distance (in km) walked in 2008, by user with id=112:\n")
+        print("\nQuery 7 - Find the total distance (in km) walked in 2008, by user with id=112:\n")
         print(tabulate(rows, headers=["Total Distance"], tablefmt="simple"))
-        if len(rows) == 1:
-            print('\n1 row in set ({:.2f} sec)\n'.format(stop - start))
-        else:
-            print('\n{} rows in set ({:.2f} sec)\n'.format(
-                len(rows), stop - start))
+        print('\nQuery done in {:.2f} seconds\n'.format(stop - start))
 
     def query_8(self):
         # 8: Find the top 20 users who have gained the most altitude meters.
@@ -419,27 +479,34 @@ class Connection:
     def query_9(self):
         # 9: Find all users who have invalid activities,and the number of invalid activities per user
         # An invalid activity is defined as an activity with consecutive trackpoints where the timestamps deviate with at least 5 minutes.
-        query = "SELECT act.id as act_id, act.user_id as user_id, tp.date_time as timestamp FROM TrackPoint as tp JOIN Activity as act WHERE tp.activity_id = act.id"
         start = time.perf_counter()
-        self.cursor.execute(query)
+        trackpoints = self.db.trackpoint.find(
+            {},
+            {
+                "_id": 0,
+                "user_id": 1,
+                "activity_id": 1,
+                "date_time": 1
+            }
+        )
         (last_ts, last_act) = (None, None)  # Last trackpoint and activity
         # Dictionary user_id -> # of invalid acts.
         users_with_invalid_acts = {}
         last_invalid_act = None  # Last invalid activity
 
-        for (act_id, user_id, timestamp) in self.cursor:
+        for trackpoint in trackpoints:
             # We skip the first trackpoint and activities that have been already marked as invalid
             # We also skip when we change activities to avoid, can't compute time diff between them
-            if act_id != last_invalid_act and last_ts != None and act_id == last_act:
+            if trackpoint['activity_id'] != last_invalid_act and last_ts != None and trackpoint['activity_id'] == last_act:
                 # Difference in seconds
-                diff = (timestamp - last_ts).total_seconds()
+                diff = (trackpoint['date_time'] - last_ts).total_seconds()
                 if diff >= 300.0:
-                    if user_id in users_with_invalid_acts:
-                        users_with_invalid_acts[user_id] += 1
+                    if trackpoint['user_id'] in users_with_invalid_acts:
+                        users_with_invalid_acts[trackpoint['user_id']] += 1
                     else:
-                        users_with_invalid_acts[user_id] = 1
-                    last_invalid_act = act_id  # Mark as invalid
-            (last_ts, last_act) = (timestamp, act_id)
+                        users_with_invalid_acts[trackpoint['user_id']] = 1
+                    last_invalid_act = trackpoint['activity_id']  # Mark as invalid
+            (last_ts, last_act) = (trackpoint['date_time'], trackpoint['activity_id'])
         stop = time.perf_counter()
 
         # Arrange as table
@@ -449,13 +516,9 @@ class Connection:
             row.append(entry)
             row.append(users_with_invalid_acts[entry])
             rows.append(row)
-        print("Query 9 - Find all users who have invalid activities, and the number of invalid activities per user:\n")
+        print("\nQuery 9 - Find all users who have invalid activities, and the number of invalid activities per user:\n")
         print(tabulate(rows, headers=["User", "Number of invalid activities"], tablefmt="simple"))
-        if len(rows) == 1:
-            print('\n1 row in set ({:.2f} sec)\n'.format(stop - start))
-        else:
-            print('\n{} rows in set ({:.2f} sec)\n'.format(
-                len(rows), stop - start))
+        print('\nQuery done in {:.2f} seconds\n'.format(stop - start))
 
     def query_10(self):
         # 10: Find the users who have tracked an activity in the Forbidden City of Beijing.
@@ -505,16 +568,34 @@ class Connection:
         #   - The answer should be on format (user_id, most_used_transportation_mode) sorted on user_id.
         #   - Some users may have the same number of activities tagged with e.g. walk and car. In this case it is up to you to decide which transportation mode to include in your answer (choose one).
         #   - Do not count the rows where the mode is null.
-        query = "SELECT user_id, transportation_mode, COUNT(*) as tcount FROM (SELECT * FROM Activity WHERE transportation_mode IS NOT NULL) as t1 GROUP BY user_id, transportation_mode"
         start = time.perf_counter()
-        self.cursor.execute(query)
+        user_trans = self.db.activity.aggregate([
+            {
+                "$match": {
+                    "transportation_mode": {
+                        "$ne": None
+                    }
+                }
+            },
+            {
+                "$group": {
+                    "_id": {
+                        "user": "$user_id",
+                        "transportation_mode": "$transportation_mode"
+                    },
+                    "count": {
+                        "$sum": 1
+                    }
+                }
+            }
+        ])
         # Dictionary user_id -> name of most used transportation mode.
         best_trans_modes = {}
         # Dictionary user_id -> # of activities with most used transportation mode
         most_used_trans = {}
 
-        for (user_id, transportation_mode, tcount) in self.cursor:
-            if user_id not in best_trans_modes or most_used_trans[user_id] < tcount:
+        for user in user_trans:
+            if user['user_id'] not in best_trans_modes or most_used_trans[user['user_ids']] < user:
                 best_trans_modes[user_id] = transportation_mode
                 most_used_trans[user_id] = tcount
 
@@ -546,16 +627,16 @@ def main():
         # Parse dataset and insert data into tables
         # program.insert_data('dataset')
         # Execute the queries
-        # program.query_1()
-        program.query_2()
-        # program.query_3()
-        program.query_4()
-        # program.query_5()
-        program.query_6()
-        # program.query_7()
-        program.query_8()
-        # program.query_9()
-        program.query_10()
+        #program.query_1()
+        #program.query_2()
+        #program.query_3()
+        #program.query_4()
+        #program.query_5()
+        #program.query_6()
+        #program.query_7()
+        #program.query_8()
+        program.query_9()
+        #program.query_10()
         # program.query_11()
 
     except Exception as e:
