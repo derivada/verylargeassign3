@@ -168,6 +168,7 @@ class Connection:
     def query_1(self):
         # 1: How many users, activities and trackpoints are there in the dataset (after it is inserted into the database).
         start = time.perf_counter()
+        # For this query we simply perform an aggregate count on each collection
         users = self.db.user.aggregate([
             {
                 "$count": "Users"
@@ -228,6 +229,7 @@ class Connection:
     def query_3(self):
         # 3: Find the top 20 users with the highest number of activities.
         start = time.perf_counter()
+        # For this query we group all activities on the user ID and then count how many of them are on each group
         user_act = self.db.activity.aggregate([
             {
                 "$group":{
@@ -238,12 +240,12 @@ class Connection:
                 }
             },
             {
-                "$sort": {
-                    "count": -1
+                "$sort":{
+                    "count":-1
                 }
             },
             {
-                "$limit": 20
+                "$limit":20
             }
         ])
         stop = time.perf_counter()
@@ -253,7 +255,7 @@ class Connection:
             table.append([user['_id'], user['count']])
 
         print("\nQuery 3 - Find the top 20 users with the highest number of activities:\n")
-        print(tabulate(table, headers=["Users","Activities"], tablefmt="simple"))
+        print(tabulate(table, headers=["Users", "Activities"], tablefmt="simple"))
         print('\nQuery done in {:.2f} seconds\n'.format(stop - start))
 
     def query_4(self):
@@ -287,17 +289,21 @@ class Connection:
     def query_5(self):
         # 5: Find all types of transportation modes and count how many activities that are tagged with these transportation mode labels. Do not count the documents where the mode is null.
         start = time.perf_counter()
+        # For this query we first filter all the activities without transportation mode and then 
+        # we group all activities on transportation mode and count how many of them are on each group
         transportation_mode_types = self.db.activity.aggregate([
             {
-                "$match": {
-                    "transportation_mode": {"$ne": None}}
-
+                "$match":{
+                    "transportation_mode":{
+                        "$ne":"None"
+                    }
+                }
             },
             {
-                "$group": {
-                    "_id": "$transportation_mode",
-                    "count": {
-                        "$sum": 1
+                "$group":{
+                    "_id":"$transportation_mode",
+                    "count":{
+                        "$sum":1
                     }
                 }
             }
@@ -308,7 +314,7 @@ class Connection:
         for transportation_mode in transportation_mode_types:
             table.append([transportation_mode['_id'], transportation_mode['count']])
         print("\nQuery 5 - Find all types of transportation modes and count how many activities that are tagged with these transportation mode labels. Do not count the documents where the mode is null:\n")
-        print(tabulate(table, headers=["Transportation Mode Types"], tablefmt="simple"))
+        print(tabulate(table, headers=["Transportation mode", "Count"], tablefmt="simple"))
         print('\nQuery done in {:.2f} seconds\n'.format(stop - start))
 
     def query_6(self):
@@ -391,6 +397,7 @@ class Connection:
     def query_7(self):
         # 7: Find the total distance (in km) walked in 2008, by user with id=112.
         start = time.perf_counter()
+        # For this query, we find all trackpaints in 2008 by comparing with the start and end of the year, then, we filter by user id
         coordinates = self.db.trackpoint.find(
             {
                 "date_time":
@@ -479,14 +486,17 @@ class Connection:
     def query_9(self):
         # 9: Find all users who have invalid activities,and the number of invalid activities per user
         # An invalid activity is defined as an activity with consecutive trackpoints where the timestamps deviate with at least 5 minutes.
+
+        # We get the id, user ID, activity ID and date time from the trackpoints collection
         start = time.perf_counter()
         trackpoints = self.db.trackpoint.find(
-            {},
             {
-                "_id": 0,
-                "user_id": 1,
-                "activity_id": 1,
-                "date_time": 1
+            },
+            {
+                "_id":0,
+                "user_id":1,
+                "activity_id":1,
+                "date_time":1
             }
         )
         (last_ts, last_act) = (None, None)  # Last trackpoint and activity
@@ -569,23 +579,30 @@ class Connection:
         #   - Some users may have the same number of activities tagged with e.g. walk and car. In this case it is up to you to decide which transportation mode to include in your answer (choose one).
         #   - Do not count the rows where the mode is null.
         start = time.perf_counter()
+        # For this query we first filter activities without a transportation mode and then group them on both the user ID and the transportation mode
+        # we output the amount of rows on each group and both the user ID and transportation mode
         user_trans = self.db.activity.aggregate([
             {
-                "$match": {
-                    "transportation_mode": {
-                        "$ne": None
+                "$match":{
+                    "transportation_mode":{
+                        "$ne":"None"
                     }
                 }
             },
             {
-                "$group": {
-                    "_id": {
-                        "user": "$user_id",
-                        "transportation_mode": "$transportation_mode"
+                "$group":{
+                    "_id":{
+                        "user":"$user_id",
+                        "transportation_mode":"$transportation_mode"
                     },
-                    "count": {
-                        "$sum": 1
+                    "count":{
+                        "$sum":1
                     }
+                }
+            },
+            {
+                "$sort":{
+                    "_id":1
                 }
             }
         ])
@@ -595,9 +612,14 @@ class Connection:
         most_used_trans = {}
 
         for user in user_trans:
-            if user['user_id'] not in best_trans_modes or most_used_trans[user['user_ids']] < user:
-                best_trans_modes[user_id] = transportation_mode
-                most_used_trans[user_id] = tcount
+            # We have a double dictionary structure on the output so we separate the fields here to make it more readable
+            user_id = user['_id']['user']
+            trans_mode = user['_id']['transportation_mode']
+            count = user['count']
+            
+            if user_id not in best_trans_modes or most_used_trans[user_id] < count:
+                best_trans_modes[user_id] = trans_mode
+                most_used_trans[user_id] = count
 
         stop = time.perf_counter()
         # Arrange as table
@@ -608,14 +630,10 @@ class Connection:
             row.append(best_trans_modes[entry])
             rows.append(row)
         print(
-            "Query 11 - Find all users who have registered transportation_mode and their most used transportation_mode:\n")
+            "\nQuery 11 - Find all users who have registered transportation_mode and their most used transportation_mode:\n")
         print(tabulate(rows, headers=[
               "User", "Most used transportation mode"], tablefmt="simple"))
-        if len(rows) == 1:
-            print('\n1 row in set ({:.2f} sec)\n'.format(stop - start))
-        else:
-            print('\n{} rows in set ({:.2f} sec)\n'.format(
-                len(rows), stop - start))
+        print('\nQuery done in {:.2f} seconds\n'.format(stop - start))
 
 def parse_time(string):
     return datetime.strptime(string,  "%Y-%m-%d %H:%M:%S")
@@ -627,17 +645,17 @@ def main():
         # Parse dataset and insert data into tables
         # program.insert_data('dataset')
         # Execute the queries
-        #program.query_1()
-        #program.query_2()
-        #program.query_3()
-        #program.query_4()
-        #program.query_5()
-        #program.query_6()
-        #program.query_7()
-        #program.query_8()
+        program.query_1()
+        program.query_2()
+        program.query_3()
+        program.query_4()
+        program.query_5()
+        program.query_6()
+        program.query_7()
+        program.query_8()
         program.query_9()
-        #program.query_10()
-        # program.query_11()
+        program.query_10()
+        program.query_11()
 
     except Exception as e:
         print("ERROR: Failed to use database:", e)
